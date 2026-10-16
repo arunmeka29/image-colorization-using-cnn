@@ -1,0 +1,12 @@
+[server]
+# Disabling file watcher is crucial because the dataset directory contains tens of thousands
+# of images. Watching them causes watchdog to freeze the server and cause severe page load delays.
+fileWatcherType = "none"
+headless = true
+runOnSave = false
+fastReruns = true
+maxUploadSize = 200
+
+[browser]
+# Disable usage telemetry to avoid network timeout delays on startup
+gatherUsageStats = false
