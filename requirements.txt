@@ -1,6 +1,14 @@
+<<<<<<< HEAD
 tensorflow
 numpy
 pillow
 opencv-python
 streamlit
+=======
+tensorflow
+numpy
+pillow
+opencv-python
+streamlit
+>>>>>>> 79804a1dddb3f7ce045adbc8a86acf04e9e777b5
 matplotlib
