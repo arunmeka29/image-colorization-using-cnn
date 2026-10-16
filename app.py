@@ -1,6 +1,7 @@
 
 import io
 import os
+import hashlib
 from pathlib import Path
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -30,7 +31,7 @@ st.set_page_config(
 )
 
 # =====================================================
-# PAGE HEADER
+# HEADER
 # =====================================================
 
 st.title("Image Colorization Using a CNN")
@@ -55,28 +56,21 @@ def find_model_path():
     )
 
 
-@st.cache_resource(show_spinner="Loading colorization model...")
-def load_colorization_model():
+@st.cache_resource(show_spinner="Loading CNN model...")
+def load_colorization_model(model_path_string):
     from tensorflow import keras
 
-    model_path = find_model_path()
-
-    if model_path is None:
-        raise FileNotFoundError(
-            "No trained model found in models/. "
-            "Ensure best_colorization_model.keras or "
-            "colorization_model.keras exists in the repository."
-        )
-
     model = keras.models.load_model(
-        str(model_path),
+        model_path_string,
         compile=False,
     )
 
     if isinstance(model.input_shape, list) or isinstance(
         model.output_shape, list
     ):
-        raise ValueError("Expected a single-input, single-output model.")
+        raise ValueError(
+            "The model must have one input and one output."
+        )
 
     if model.input_shape[-1] != 1 or model.output_shape[-1] != 3:
         raise ValueError(
@@ -84,12 +78,31 @@ def load_colorization_model():
             f"{model.output_shape}"
         )
 
-    return model, model_path.name
+    return model
 
 
 # =====================================================
-# IMAGE PREPROCESSING
+# IMAGE UTILITIES
 # =====================================================
+
+def image_to_png_bytes(image):
+    """Convert a PIL image into PNG bytes for display and download."""
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def display_image(image, caption):
+    """Display PNG bytes rather than passing a PIL object directly."""
+    png_bytes = image_to_png_bytes(image)
+
+    st.image(
+        png_bytes,
+        caption=caption,
+        output_format="PNG",
+        use_container_width=True,
+    )
+
 
 def prepare_image(image_bytes):
     with Image.open(io.BytesIO(image_bytes)) as opened_image:
@@ -168,13 +181,17 @@ with st.sidebar:
     else:
         st.error("No model found in the models/ folder.")
 
-    st.write(f"**Target Input:** ({IMAGE_SIZE}, {IMAGE_SIZE}, 1) Grayscale")
-    st.write(f"**Target Output:** ({IMAGE_SIZE}, {IMAGE_SIZE}, 3) RGB")
+    st.write(
+        f"**Target Input:** ({IMAGE_SIZE}, {IMAGE_SIZE}, 1) Grayscale"
+    )
+    st.write(
+        f"**Target Output:** ({IMAGE_SIZE}, {IMAGE_SIZE}, 3) RGB"
+    )
     st.caption("Colors are predictions, not guaranteed original colors.")
 
 
 # =====================================================
-# IMAGE UPLOAD AND PREVIEW
+# UPLOAD AND PREVIEW
 # =====================================================
 
 uploaded_file = st.file_uploader(
@@ -194,40 +211,28 @@ else:
             st.error("The uploaded file is empty.")
             st.stop()
 
+        upload_hash = hashlib.sha256(image_bytes).hexdigest()
+
+        if st.session_state.get("upload_hash") != upload_hash:
+            st.session_state["upload_hash"] = upload_hash
+            st.session_state.pop("colorized_png", None)
+
         original, grayscale, model_input, original_size = prepare_image(
             image_bytes
         )
-
-        upload_key = (
-            uploaded_file.name,
-            len(image_bytes),
-            hash(image_bytes),
-        )
-
-        if st.session_state.get("upload_key") != upload_key:
-            st.session_state["upload_key"] = upload_key
-            st.session_state.pop("colorized_image_bytes", None)
 
         st.subheader("Input Preview")
 
         before_col, gray_col = st.columns(2)
 
         with before_col:
-            st.image(
-                original,
-                caption="Uploaded image",
-                use_container_width=True,
-            )
+            display_image(original, "Uploaded image")
 
         with gray_col:
-            st.image(
-                grayscale,
-                caption="Grayscale input used by the CNN",
-                use_container_width=True,
-            )
+            display_image(grayscale, "Grayscale input used by the CNN")
 
         # =================================================
-        # RUN COLORIZATION
+        # COLORIZE BUTTON
         # =================================================
 
         if st.button(
@@ -235,31 +240,38 @@ else:
             type="primary",
             use_container_width=True,
         ):
-            with st.spinner("Generating colorized image..."):
-                model, model_name = load_colorization_model()
+            model_path = find_model_path()
 
-                result = colorize_image(
-                    model,
-                    model_input,
-                    original_size,
+            if model_path is None:
+                st.error(
+                    "Model not found. Check the repository's models/ folder."
                 )
+            else:
+                try:
+                    with st.spinner("Colorizing image with CNN..."):
+                        model = load_colorization_model(str(model_path))
 
-                # Store PNG bytes instead of relying on a temporary image.
-                output_buffer = io.BytesIO()
-                result.save(output_buffer, format="PNG")
+                        result = colorize_image(
+                            model,
+                            model_input,
+                            original_size,
+                        )
 
-                st.session_state["colorized_image_bytes"] = (
-                    output_buffer.getvalue()
-                )
+                        st.session_state["colorized_png"] = (
+                            image_to_png_bytes(result)
+                        )
+
+                except Exception as error:
+                    st.error(f"Colorization failed: {error}")
 
         # =================================================
         # RESULT AND DOWNLOAD
         # =================================================
 
-        png_data = st.session_state.get("colorized_image_bytes")
+        colorized_png = st.session_state.get("colorized_png")
 
-        if png_data:
-            with Image.open(io.BytesIO(png_data)) as saved_image:
+        if colorized_png:
+            with Image.open(io.BytesIO(colorized_png)) as saved_image:
                 result = saved_image.convert("RGB")
 
             st.divider()
@@ -268,32 +280,24 @@ else:
             result_col1, result_col2 = st.columns(2)
 
             with result_col1:
-                st.image(
-                    grayscale,
-                    caption="Before: Grayscale",
-                    use_container_width=True,
-                )
+                display_image(grayscale, "Before: Grayscale")
 
             with result_col2:
-                st.image(
-                    result,
-                    caption="After: CNN Colorization",
-                    use_container_width=True,
-                )
+                display_image(result, "After: CNN Colorization")
 
             st.download_button(
                 label="Download Colorized Image",
-                data=png_data,
+                data=colorized_png,
                 file_name="colorized_image.png",
                 mime="image/png",
-                key="download_colorized_image",
+                key=f"download_{upload_hash}",
                 use_container_width=True,
             )
 
     except (UnidentifiedImageError, OSError):
         st.error(
-            "Unable to read this image. Please upload a valid "
-            "JPG, JPEG, PNG, BMP, or WebP file."
+            "Unable to read this image. Upload a valid JPG, JPEG, "
+            "PNG, BMP, or WebP image."
         )
 
     except Exception as error:
